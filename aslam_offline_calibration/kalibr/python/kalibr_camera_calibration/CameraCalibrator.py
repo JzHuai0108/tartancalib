@@ -344,9 +344,14 @@ class CameraCalibration(object):
 
 
         batch_problem = CalibrationTargetOptimizationProblem.fromTargetViewObservations(self.cameras, self.target, self.baselines, T_tc_guess, rig_observations, useBlakeZissermanMest=self.useBlakeZissermanMest, polarObject=self.polarObject)
-        
+        numNewObs = 0
+        for camid, obslist in batch_problem.rerrs.items():
+            numNewObs += len(obslist)
+        if numNewObs < 2:
+            sm.logDebug("Ignore an almost empty batch")
+            return False
         self.estimator_return_value = self.estimator.addBatch(batch_problem, force)
-        
+
         if self.estimator_return_value.numIterations >= self.optimizerOptions.maxIterations:
             sm.logError("Did not converge in maxIterations... restarting...")
             raise OptimizationDiverged
@@ -429,7 +434,27 @@ def getPointStatistics(cself,view_id,cam_id,pidx):
     rval.squaredError = squaredError
     rval.e = e
     return rval
+
+def getMeanReprojectionError(all_rerrs):
+    if not len(all_rerrs)>0:
+        raise RuntimeError("rerrs has invalid dimension")
+
+    gc.disable() #append speed up
+    rerr_matrix=list()
+    for view_id, view_rerrs in enumerate(all_rerrs):
+        if view_rerrs is not None: #if cam sees target in this view
+            for rerr in view_rerrs:
+                if not (rerr==np.array([None,None])).all(): #if corner was observed
+                    rerr_matrix.append(np.linalg.norm(rerr))
     
+    rerr_matrix = np.array(rerr_matrix)
+    gc.enable()
+
+    mean = np.mean(rerr_matrix)
+    numpoints = len(rerr_matrix)
+    rmse = np.sqrt(np.mean(np.square(rerr_matrix)))
+    return mean, numpoints, rmse
+
 def getReprojectionErrorStatistics(all_rerrs):
     """
     usage:  all_corners, all_reprojections, all_reprojection_errs = getReprojectionErrors(calibrator, 0)
@@ -673,11 +698,15 @@ def printParameters(cself, dest=sys.stdout):
         print("\t projection: %s +- %s" % (p, np.array(dp)), file=dest)
         
         #reproj error statistics
-        corners, reprojs, rerrs = getReprojectionErrors(cself, cidx)        
+        corners, reprojs, rerrs = getReprojectionErrors(cself, cidx)      
         if len(rerrs)>0:
             me, se = getReprojectionErrorStatistics(rerrs)
+            mre, numpoints, rmse = getMeanReprojectionError(rerrs)
             try:
               print("\t reprojection error: [%f, %f] +- [%f, %f]" % (me[0], me[1], se[0], se[1]), file=dest)
+              print("\t mean reprojection error: %f" % (mre), file=dest)
+              print("\t num keypoints: %d" % (numpoints), file=dest)
+              print("\t RMS reprojection error: %f" % (rmse), file=dest)
             except:
               print("\t Failed printing the reprojection error.", file=dest)
             print(file=dest)

@@ -554,13 +554,16 @@ def main():
                         timestamps = obsdb.getAllViewTimestamps()
                         # add all observed corners
                         corners_mat = []
-
+                        imgsize = np.zeros(2)
+                        selected_times = []
                         for view_id, timestamp in enumerate(timestamps):
                             #add new batch problem
                             obs_tuple = obsdb.getAllObsAtTimestamp(timestamp)
                             obs = obs_tuple[0][1]
                             #assumption: only single-cam use
                             x = obs.getCornersImageFrame()
+                            imgsize[0] = obs.imRows()
+                            imgsize[1] = obs.imCols()
                             x = x.transpose()
                             corner_idxs = obs.getCornersIdx()
 
@@ -569,8 +572,9 @@ def main():
                             # cspond[0,:] = np.arange(1,num_corners+1)
                             # cspond[1,:] = corner_idxs+1
                             cspond[0,:] = corner_idxs+1
-
-                            corners_mat.append({"x":x,"cspond":cspond})
+                            if num_corners >= 4:  # p3p needs at least 4 points.
+                                corners_mat.append({"x":x,"cspond":cspond})
+                                selected_times.append(timestamp)
 
                         # add board definition
                         num_corners = cameraList[0].ctarget.detector.target().size()
@@ -586,7 +590,7 @@ def main():
                         corners_mat_ = np.empty((len(corners_mat),), dtype=np.object)
                         for i in range(len(corners_mat)):
                             corners_mat_[i] = corners_mat[i]
-                        scipy.io.savemat('corners.mat',{"corners":corners_mat})
+                        scipy.io.savemat('corners.mat',{"corners":corners_mat_, "imgsize":imgsize, "times": np.array(selected_times)})
 
                         # save board def mat
                         scipy.io.savemat('board.mat',{"boards":{"Rt":Rt,"X":x_board}})
