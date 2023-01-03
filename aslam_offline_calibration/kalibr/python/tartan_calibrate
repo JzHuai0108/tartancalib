@@ -37,6 +37,17 @@ def initBagDataset(bagfile, topic, from_to):
     print("\tNumber of images: {0}".format(reader.numImages()))
     return reader
 
+
+def initMatDataset(matdir, cam_id, from_to):
+    """ Reads a ROS bag dataset into a reader and returns the reader."""
+    print("\tDataset:          {0}".format(matdir))
+    print("\tcamera id:            {0}".format(cam_id))
+    reader = kc.MatImageDatasetReader(os.path.join(matdir, "board.mat"),
+                                      os.path.join(matdir, "corners.mat"),
+                                      cam_id, from_to=from_to)
+    print("\tNumber of images: {0}".format(reader.numImages()))
+    return reader
+
 num_corners = np.array([])
 log_file = 'log.txt'
 force_all_points = False
@@ -332,6 +343,7 @@ def main():
     obsdb = kcc.ObservationDatabase(parsed.max_delta_approxsync)
     obslist = list()
 
+    simdata = not parsed.bagfile.endswith('.bag')
     for cam_id in range(numCams):
         topic = parsed.topics[cam_id]
         modelName = parsed.models[cam_id]
@@ -339,18 +351,22 @@ def main():
         print("\tCamera model:\t  {0}".format(modelName))
 
         if modelName in cameraModels:
-            #open dataset
-            dataset = initBagDataset(parsed.bagfile, topic, parsed.bag_from_to)
+            if simdata:
+                dataset = initMatDataset(parsed.bagfile, cam_id, parsed.bag_from_to)
+            else:
+                dataset = initBagDataset(parsed.bagfile, topic, parsed.bag_from_to)
 
             #create camera
             cameraModel = cameraModels[modelName]
             cam = kcc.CameraGeometry(cameraModel, targetConfig, dataset, verbose=(parsed.verbose or parsed.showextraction))
-
-            #extract the targets
-            multithreading = not (parsed.verbose or parsed.showextraction)
-            observations = kc.extractCornersFromDataset(cam.dataset, cam.ctarget.detector,
-                                                        multithreading=multithreading, clearImages=False,
-                                                        noTransformation=True)
+            if simdata:
+                observations = dataset.getObservations(cam.ctarget.detector.target())
+            else:
+                #extract the targets
+                multithreading = not (parsed.verbose or parsed.showextraction)
+                observations = kc.extractCornersFromDataset(cam.dataset, cam.ctarget.detector,
+                                                            multithreading=multithreading, clearImages=False,
+                                                            noTransformation=True)
             #populate the database
             for obs in observations:
                 obsdb.addObservation(cam_id, obs)
@@ -597,8 +613,8 @@ def main():
                 #obsdb_init is the obsdb that was used to train this model
                 tartanlogs.append(TartanLogging.TartanLogger(obsdb_init,[copy.deepcopy(cam_.geometry) for cam_ in calibrator.cameras],kcc.getAllPointStatistics(calibrator,0)))
 
-
-                if (iteration < (num_iterations-1)):
+                # For sim data, no need to run tartan corner iterative search!
+                if (iteration < (num_iterations-1)) and not simdata:
                     obsdb = kcc.ObservationDatabase(parsed.max_delta_approxsync)
 
                     for cam_id in range(0, numCams):
@@ -701,7 +717,8 @@ def main():
 
             else:
                 break #normal exit
-
+        if simdata:  # one iteration is OK for sim data.
+            break
     kcc.generateReport(calibrator, reportFile, showOnScreen=not parsed.dontShowReport, graph=G, removedOutlierCorners=removedOutlierCorners)
 
 if __name__ == "__main__":
