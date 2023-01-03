@@ -198,6 +198,90 @@ def parseArgs():
 
     return parsed
 
+
+def saveMatlab(obsdb, cameraList, viewsForCalib, max_delta_approxsync, saveDir):
+    """
+
+    :param obsdb:
+    :param cameraList:
+    :param viewsForCalib: a list of times of observations used for calibration,
+     each element is a list of aslam::Time for all cameras.
+    :param saveDir:
+    :return:
+    """
+    print("Saving to MatLab matrix...")
+    timestamps = obsdb.getAllViewTimestamps() # a list of double times
+    timestamps = sorted(timestamps)
+    viewsForCalib = sorted(viewsForCalib, key=lambda x: x[0]) # Note timestamps is a superset of viewsForCalib.
+    calibviewid = 0
+    foundcalibviews = 0
+
+    # add all observed corners
+    corners_mat = []
+    imgsize = np.zeros(2)
+    selected_times = []
+    T_tc_list = []
+    for view_id, timestamp in enumerate(timestamps):
+        found = False
+        if calibviewid >= len(viewsForCalib):
+            found = False
+        elif abs(timestamp - viewsForCalib[calibviewid][0].toSec()) <= max_delta_approxsync:
+            found = True
+            calibviewid += 1
+            foundcalibviews += 1
+
+        obs_tuple = obsdb.getAllObsAtTimestamp(timestamp)
+        obs = obs_tuple[0][1]
+        # assumption: only single-cam use
+        x = obs.getCornersImageFrame()
+        imgsize[0] = obs.imRows()
+        imgsize[1] = obs.imCols()
+        x = x.transpose()
+        corner_idxs = obs.getCornersIdx()
+
+        num_corners = np.shape(x)[1]
+        cspond = np.ones((2, num_corners))
+        # cspond[0,:] = np.arange(1,num_corners+1)
+        # cspond[1,:] = corner_idxs+1
+        cspond[0, :] = corner_idxs + 1
+        if num_corners >= 4:  # p3p needs at least 4 points.
+            success, sm_T_tc_guess = kcc.MulticamCalibrationGraph.GetTargetPoseGuess(obsdb, timestamp, cameraList)
+            np_T_tc = np.zeros(7)
+            np_T_tc[0:3] = sm_T_tc_guess.t()
+            # quatInv converts JPL quaternion to Hamilton quaternion (x,y,z,w).
+            np_T_tc[3:7] = sm.quatInv(sm_T_tc_guess.q())
+            T_tc_list.append(np_T_tc)
+            corners_mat.append({"x": x, "cspond": cspond, 't_T_c': np_T_tc, 'used' : found})
+            selected_times.append(timestamp)
+
+    # sanity check
+    if foundcalibviews != len(viewsForCalib):
+        print("Warn: unable to locate in the database all the views "
+              "used for calib. Used {}, found {}".format(len(viewsForCalib), foundcalibviews))
+    # add board definition
+    num_corners = cameraList[0].ctarget.detector.target().size()
+    x_board = np.zeros((2, num_corners))
+    for q in range(num_corners):
+        x_board[0, q] = cameraList[0].ctarget.detector.target().point(q)[0]
+        x_board[1, q] = cameraList[0].ctarget.detector.target().point(q)[1]
+
+    # identity because we only have one board, so it's at the centre of the global coordinate frame
+    Rt = np.array([[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, 1.0, 0]])
+
+    # save corners mat
+    corners_mat_ = np.empty((len(corners_mat),), dtype=np.object)
+    for i in range(len(corners_mat)):
+        corners_mat_[i] = corners_mat[i]
+    cornerfile = os.path.join(saveDir, 'corners.mat')
+    scipy.io.savemat(cornerfile, {"corners": corners_mat_, "imgsize": imgsize,
+                                  "times": np.array(selected_times),
+                                  'used': len(viewsForCalib), 'marked': foundcalibviews})
+
+    boardfile = os.path.join(saveDir, 'board.mat')
+    # save board def mat
+    scipy.io.savemat(boardfile, {"boards": {"Rt": Rt, "X": x_board}})
+
+
 def main():
     parsed = parseArgs()
     # Logging modes (verbosity)
@@ -547,53 +631,19 @@ def main():
                         for obs in new_obs:
                             obsdb.addObservation(cam_id,obs)
                         obslistTartan[cam_id] = new_obs
-
+                else:
                     # Saves matlab matrix for use in Babelcalib if outputMatlab option is selected
-                    if (parsed.outputMatlab and iteration == (num_iterations-2)):
-                        print("Saving to MatLab matrix")
-                        timestamps = obsdb.getAllViewTimestamps()
-                        # add all observed corners
-                        corners_mat = []
-                        imgsize = np.zeros(2)
-                        selected_times = []
-                        for view_id, timestamp in enumerate(timestamps):
-                            #add new batch problem
-                            obs_tuple = obsdb.getAllObsAtTimestamp(timestamp)
-                            obs = obs_tuple[0][1]
-                            #assumption: only single-cam use
-                            x = obs.getCornersImageFrame()
-                            imgsize[0] = obs.imRows()
-                            imgsize[1] = obs.imCols()
-                            x = x.transpose()
-                            corner_idxs = obs.getCornersIdx()
-
-                            num_corners = np.shape(x)[1]
-                            cspond = np.ones((2,num_corners))
-                            # cspond[0,:] = np.arange(1,num_corners+1)
-                            # cspond[1,:] = corner_idxs+1
-                            cspond[0,:] = corner_idxs+1
-                            if num_corners >= 4:  # p3p needs at least 4 points.
-                                corners_mat.append({"x":x,"cspond":cspond})
-                                selected_times.append(timestamp)
-
-                        # add board definition
-                        num_corners = cameraList[0].ctarget.detector.target().size()
-                        x_board = np.zeros((2,num_corners))
-                        for q in range(num_corners):
-                            x_board[0,q] = cameraList[0].ctarget.detector.target().point(q)[0]
-                            x_board[1,q] = cameraList[0].ctarget.detector.target().point(q)[1]
-
-                        # identity because we only have one board, so it's at the centre of the global coordinate frame
-                        Rt = np.array([[1.0,0,0,0],[0,1.0,0,0],[0,0,1.0,0]])
-
-                        # save corners mat
-                        corners_mat_ = np.empty((len(corners_mat),), dtype=np.object)
-                        for i in range(len(corners_mat)):
-                            corners_mat_[i] = corners_mat[i]
-                        scipy.io.savemat('corners.mat',{"corners":corners_mat_, "imgsize":imgsize, "times": np.array(selected_times)})
-
-                        # save board def mat
-                        scipy.io.savemat('board.mat',{"boards":{"Rt":Rt,"X":x_board}})
+                    if parsed.outputMatlab:
+                        print('Saving matlab output for #iter {}.'.format(iteration))
+                        p = cameraList[0].geometry.projection().getParameters().flatten()
+                        print('current camera 0: {}'.format(p))
+                        viewsForCalib = []
+                        for view in calibrator.views:
+                            times = []
+                            for [camid, obs] in view.rig_observations:
+                                times.append(obs.time())
+                            viewsForCalib.append(times)
+                        saveMatlab(obsdb, cameraList, viewsForCalib, parsed.max_delta_approxsync, parsed.saveDir)
 
                 # Initialize the calibration graph
                 graph = kcc.MulticamCalibrationGraph(obsdb)

@@ -232,7 +232,37 @@ class MulticamCalibrationGraph(object):
             sm.logWarn("Full batch refinement failed!")
     
         return baselines
-    
+
+    @staticmethod
+    def GetTargetPoseGuess(obsdb, timestamp, cameras, baselines_HL=[]):
+        # go through all camera that see this target at the given time
+        # and take the one with the most target points
+        camids = list()
+        numcorners = list()
+        for cam_id in obsdb.getCamIdsAtTimestamp(timestamp):
+            camids.append(cam_id)
+            numcorners.append(len(obsdb.getCornerIdsAtTime(timestamp, cam_id)))
+
+        # get the pnp solution of the cam that sees most target corners
+        max_idx = numcorners.index(max(numcorners))
+        cam_id_max = camids[max_idx]
+
+        # solve the pnp problem
+        camera_geomtry = cameras[cam_id_max].geometry
+        success, T_t_cN = camera_geomtry.estimateTransformation(obsdb.getObservationAtTime(timestamp, cam_id_max))
+
+        if not success:
+            sm.logWarn("getTargetPoseGuess: solvePnP failed with solution: {0}".format(T_t_cN))
+
+        # transform it back to cam0 (T_t_cN --> T_t_c0)
+        T_cN_c0 = sm.Transformation()
+        for baseline_HL in baselines_HL[0:cam_id_max]:
+            T_cN_c0 = baseline_HL * T_cN_c0
+
+        T_t_c0 = T_t_cN * T_cN_c0
+
+        return success, T_t_c0
+
     def getTargetPoseGuess(self, timestamp, cameras, baselines_HL=[]):
         #go through all camera that see this target at the given time
         #and take the one with the most target points        
