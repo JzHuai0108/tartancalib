@@ -42,8 +42,8 @@ def initMatDataset(matdir, cam_id, from_to):
     """ Reads a ROS bag dataset into a reader and returns the reader."""
     print("\tDataset:          {0}".format(matdir))
     print("\tcamera id:            {0}".format(cam_id))
-    reader = kc.MatImageDatasetReader(os.path.join(matdir, "board.mat"),
-                                      os.path.join(matdir, "corners.mat"),
+    reader = kc.MatImageDatasetReader(os.path.join(matdir, "board-sim.mat"),
+                                      os.path.join(matdir, "corners-sim.mat"),
                                       cam_id, from_to=from_to)
     print("\tNumber of images: {0}".format(reader.numImages()))
     return reader
@@ -403,10 +403,12 @@ def main():
 
     num_iterations = 2
     for iteration in range(num_iterations):
-        restartAttempts=100
+        restartAttempts=5
+        G=None
         initOutlierRejection=True
         removedOutlierCorners=list()
-
+        # Generate report
+        reportFile = parsed.saveDir + parsed.logDest + str(iteration) +"-report-cam.pdf"
         while True:
             try:
                 obsdb_init = copy.deepcopy(obsdb)
@@ -686,9 +688,6 @@ def main():
                 kcc.saveResultTxt(calibrator, filename=resultFileTxt)
                 print("  Detailed results written to file: {0}".format(resultFileTxt))
 
-                # Generate report
-                reportFile = parsed.saveDir + parsed.logDest + str(iteration) +"-report-cam.pdf"
-                G=None
                 if numCams>1:
                     G=graph
 
@@ -698,9 +697,33 @@ def main():
             except kcc.OptimizationDiverged:
                 restartAttempts-=1
                 sm.logWarn("Optimization diverged possibly due to a bad initialization. (Do the models fit the lenses well?)")
-
+                if len(calibrator.views) < 20 and restartAttempts == 0:
+                        restartAttempts += 1
                 if restartAttempts==0:
                     sm.logError("Max. attempts reached... Giving up...")
+                    if parsed.outputMatlab:
+                        print('Saving matlab output for #iter {}.'.format(iteration))
+                        p = cameraList[0].geometry.projection().getParameters().flatten()
+                        print('current camera 0: {}'.format(p))
+                        viewsForCalib = []
+                        for view in calibrator.views:
+                            times = []
+                            for [camid, obs] in view.rig_observations:
+                                times.append(obs.time())
+                            viewsForCalib.append(times)
+                        saveMatlab(obsdb, cameraList, viewsForCalib, parsed.max_delta_approxsync, parsed.saveDir)
+                    # Write results to file
+                    resultFile = parsed.saveDir  + parsed.logDest + str(iteration)  + "-camchain.yaml"
+                    kcc.saveChainParametersYaml(calibrator, resultFile, graph)
+                    print("Results written to file: {0}".format(resultFile))
+
+                    # Write detailed results to file
+                    resultFileTxt = parsed.saveDir  + parsed.logDest + str(iteration) + "-results-cam.txt"
+                    kcc.saveResultTxt(calibrator, filename=resultFileTxt)
+                    print("  Detailed results written to file: {0}".format(resultFileTxt))
+
+                    if numCams > 1:
+                        G = graph
                     break
                 else:
                     sm.logWarn("Restarting for a new attempt...")
